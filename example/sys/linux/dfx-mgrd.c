@@ -187,6 +187,19 @@ int main(int argc, char **argv)
 	signal(SIGINT, intHandler);
 	_unused(argc);
 	_unused(argv);
+
+    // create runtime directory to store state.txt in
+    DIR * state_dir = opendir("/run/dfx-mgrd");
+    if (!state_dir) {
+        DFX_DBG("making /run/dfx-mgrd directory");
+        if (system("mkdir -p /run/dfx-mgrd")) {
+            DFX_ERR("Failed system() API");
+            return -1;
+        }
+    } else {
+        closedir(state_dir);
+    }
+
 	// initialize the complaint queue
 	dfx_init();
 
@@ -382,13 +395,13 @@ enum protocols
     PROTOCOL_COUNT
 };
 
-static const struct lws_protocols protocols[] = { 
+static const struct lws_protocols protocols[] = {
 	// first protocol must always be HTTP handler
   {
-    "http",			
-    lws_callback_http_dummy,	
-    0,				
-	0,				
+    "http",
+    lws_callback_http_dummy,
+    0,
+	0,
 	0, NULL, 0,
   },
   {
@@ -398,7 +411,7 @@ static const struct lws_protocols protocols[] = {
     EXAMPLE_RX_BUFFER_BYTES,
 	0, NULL, 0,
   },
-  { NULL, NULL, 0, 0, 0, NULL, 0 } 
+  { NULL, NULL, 0, 0, 0, NULL, 0 }
 };
 
 void sigint_handler(int sig)
@@ -411,7 +424,7 @@ void socket_fd_setup()
 {
 	struct sockaddr_un serveraddr;
 
-	if (access(SERVER_PATH, F_OK) == 0) 
+	if (access(SERVER_PATH, F_OK) == 0)
 		unlink(SERVER_PATH);
 
     socket_d = socket(AF_UNIX, SOCK_STREAM, 0);
@@ -464,7 +477,7 @@ int main(int argc, const char **argv)
 	lws_set_log_level(logs, NULL);
 	lwsl_user("LWS minimal http server dynamic | visit http://localhost:7681\n");
 
-	memset(&info, 0, sizeof info); 
+	memset(&info, 0, sizeof info);
 	//info.options = LWS_SERVER_OPTION_DO_SSL_GLOBAL_INIT |
 	//	       LWS_SERVER_OPTION_EXPLICIT_VHOSTS |
 	//	LWS_SERVER_OPTION_HTTP_HEADERS_SECURITY_BEST_PRACTICES_ENFORCE;

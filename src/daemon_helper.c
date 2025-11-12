@@ -1657,18 +1657,18 @@ static int fpga_state(void)
 	char *state_operating = "operating";
 	char *state_unknown = "unknown";
 
-	if (system("cat /sys/class/fpga_manager/fpga0/state >> state.txt")) {
+	if (system("cat /sys/class/fpga_manager/fpga0/state >> /run/dfx-mgrd/state.txt")) {
 		DFX_ERR("Failed system() API");
 		return -1;
 	}
-	fptr = fopen("state.txt", "r");
+	fptr = fopen("/run/dfx-mgrd/state.txt", "r");
 	if (fptr) {
 		if (fgets(buf, 10, fptr) == NULL) {
 			DFX_ERR("Failed to read fpga state");
 			buf[0] = 0;
 		}
 		fclose(fptr);
-		if (system("rm state.txt")) {
+		if (system("rm /run/dfx-mgrd/state.txt")) {
 			DFX_ERR("Failed system() API");
 		}
 		if ((strncmp(buf, state_operating, 9) == 0) || (strncmp(buf, state_unknown, 7) == 0))
@@ -1739,19 +1739,19 @@ static int user_load_overlay(char *ov, char *region)
 		DFX_ERR("Failed system() API");
 	}
 
-	snprintf(command, sizeof(command), "cat %s/path >> state.txt", ov_dir);
+	snprintf(command, sizeof(command), "cat %s/path >> /run/dfx-mgrd/state.txt", ov_dir);
 	if (system(command)) {
 		DFX_ERR("Failed system() API");
 	}
 
-	fptr = fopen("state.txt", "r");
+	fptr = fopen("/run/dfx-mgrd/state.txt", "r");
 	if (fptr) {
 		if (fgets(buf, strlen(ov) + 1, fptr) == NULL) {
 			DFX_ERR("Failed to read overlay path");
 			buf[0] = 0;
 		}
 		fclose(fptr);
-		if (system("rm state.txt")) {
+		if (system("rm /run/dfx-mgrd/state.txt")) {
 			DFX_ERR("Failed system() API");
 		}
 
