@@ -12,6 +12,7 @@
 #include <string.h>
 #include <dirent.h>
 #include <unistd.h>
+#include <libgen.h>
 #include <dfx-mgr/accel.h>
 #include <dfx-mgr/assert.h>
 #include <dfx-mgr/shell.h>
@@ -1152,7 +1153,7 @@ char *listAccelerators()
 
 	memset(res,0, sizeof(res));
 	firmware_dir_walk();
- 
+
 	sprintf(msg, header_format, "#", "Accel_type", "user_load_type", "user_load_region", "Base", "Pid",
 		"Base_type", "#slots(RPU+PL+AIE)", "slot->handle", "Accelerator");
 	strcat(res,msg);
@@ -1681,6 +1682,40 @@ static int fpga_state(void)
 }
 
 /**
+ * Extract the parent dir of the target path, and write that location to
+ * /sys/module/firmware_class/parameters/path so that the kernel can discover
+ * the firmware within
+ *
+ * @param file_path the full path to the file to be loaded
+ */
+static void set_firmware_lookup_path_for_file(const char* file_path) {
+    char path_copy[512];
+    strncpy(path_copy, file_path, sizeof(path_copy) - 1);
+    path_copy[sizeof(path_copy) - 1] = '\0';
+
+    // get parent dir
+    char *parent_dir = dirname(path_copy);
+
+
+    int fd = open("/sys/module/firmware_class/parameters/path", O_WRONLY);
+    if (fd < 0) {
+        printf("failed to open firmware path parameter");
+        return;
+    }
+
+    // set lookup path to firmware dir
+    if (write(fd, parent_dir, strlen(parent_dir)) < 0) {
+        printf("failed to write firmware lookup path");
+        close(fd);
+        return;
+    }
+
+    // Append newline for kernel sysfs expectations
+    write(fd, "\n", 1);
+    close(fd);
+}
+
+/**
  * user_load_sysfs() - load FPGA firmware via sysfs.
  * @bin: name of the bitstream file to load.
  *
@@ -1694,7 +1729,7 @@ static int fpga_state(void)
 static int user_load_sysfs(char *bin)
 {
 	char command[2048];
-
+    set_firmware_lookup_path_for_file(bin);
 	snprintf(command, sizeof(command), "echo %s > /sys/class/fpga_manager/fpga0/firmware", bin);
 	if (system(command)) {
 		DFX_ERR("Failed system() API");
@@ -1853,10 +1888,8 @@ int user_load(int flag, char *binfile, char *overlay, char *region)
 		bin = token;
 	}
 
-	snprintf(command, sizeof(command), "cp %s /lib/firmware", binfile);
-	if (system(command)) {
-		DFX_ERR("Failed system() API");
-	}
+    // todo: check binfile and overlay parent's match?
+    set_firmware_lookup_path_for_file(binfile);
 
 	snprintf(command, sizeof(command), "echo %x > /sys/class/fpga_manager/fpga0/flags", flag & 1);
 	if (system(command)) {
@@ -1877,11 +1910,6 @@ int user_load(int flag, char *binfile, char *overlay, char *region)
 		tmp = strdup(overlay);
 		while((token = strsep(&tmp, "/"))) {
 			ov = token;
-		}
-
-		snprintf(command, sizeof(command), "cp %s /lib/firmware", overlay);
-		if (system(command)) {
-			DFX_ERR("Failed system() API");
 		}
 
 		rv = user_load_overlay(ov, region);
@@ -1920,20 +1948,7 @@ int user_load(int flag, char *binfile, char *overlay, char *region)
 	}
 
 ret:
-	if (bin != NULL) {
-		snprintf(command, sizeof(command), "rm /lib/firmware/%s", bin);
-		if (system(command)) {
-			DFX_ERR("Failed system() API");
-		}
-	}
-
-	if (ov != NULL) {
-		snprintf(command, sizeof(command), "rm /lib/firmware/%s", ov);
-		if (system(command)) {
-			DFX_ERR("Failed system() API");
-		}
-	}
-
+    set_firmware_lookup_path_for_file("");
 	return rv;
 }
 
@@ -2041,15 +2056,6 @@ int user_unload(int handle)
 static void init_user_load(void)
 {
     DIR *FD;
-    FD = opendir("/lib/firmware");
-
-    if (FD) {
-	    closedir(FD);
-    } else {
-	    if (system("mkdir -p /lib/firmware")) {
-		    DFX_ERR("Failed system() API");
-	    }
-    }
 
     FD = opendir("/sys/kernel/config/device-tree/overlays/");
     if (FD)

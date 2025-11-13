@@ -11,6 +11,7 @@
 
 #ifndef _ACAPD_ACCEL_H
 #define _ACAPD_ACCEL_H
+#include <dfx-mgr/sys/linux/accel.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -43,7 +44,7 @@ extern "C" {
 #define ACAPD_ACCEL_PKG_TYPE_TAR_GZ	1U
 #define ACAPD_ACCEL_PKG_TYPE_LAST	2U
 
-#define FIRMWARE_PATH	"/lib/firmware/xilinx"
+#define DEFAULT_FIRMWARE_PATH	"/lib/firmware/xilinx"
 
 /**
  * @brief accel package information structure

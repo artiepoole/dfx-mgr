@@ -4,20 +4,23 @@
  * SPDX-License-Identifier: MIT
  */
 
+#include "accel.h"
+
+
 #include <dfx-mgr/accel.h>
 #include <dfx-mgr/assert.h>
 #include <dfx-mgr/device.h>
 #include <dfx-mgr/print.h>
 #include <dfx-mgr/shell.h>
-#include <sys/stat.h>
+#include <dirent.h>
+#include <errno.h>
+#include <fcntl.h>
 #include <libdfx.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
 #include <unistd.h>
-#include <dirent.h>
-#include <fcntl.h>
-#include <errno.h>
 
 void init_accel(acapd_accel_t *accel, acapd_accel_pkg_hd_t *pkg)
 {
@@ -277,7 +280,7 @@ void get_fds(acapd_accel_t *accel, int slot, int socket){
 }
 void get_shell_fd(int socket)
 {
-	sys_get_fd(acapd_shell_fd(),socket);	
+	sys_get_fd(acapd_shell_fd(),socket);
 }
 
 void get_shell_clock_fd(int socket)
@@ -285,22 +288,53 @@ void get_shell_clock_fd(int socket)
 	sys_get_fd(acapd_shell_clock_fd(),socket);
 }
 
+// FUNCTION DESCRIPTION:
+// Populate fw_base_dir -
+// load the string from firmware_lookup_attribute, and if it contains a real path (not just '\n') use that string as "base_dir", otherwise, fall back to DEFAULT_FIRMWARE_PATH
+void get_firmware_path(char *fw_path_result)
+{
+    const char *firmware_lookup_attribute = "/sys/module/firmware_class/parameters/path";
+    FILE *fp = fopen(firmware_lookup_attribute, "r");
+
+    if (fp) {
+        if (fgets(fw_path_result, 1024, fp) != NULL) {
+            // Strip trailing newline (sysfs files end with '\n')
+            fw_path_result[strcspn(fw_path_result, "\n")] = '\0';
+        } else {
+            fw_path_result[0] = '\0'; // read error
+        }
+        fclose(fp);
+    } else {
+        fw_path_result[0] = '\0'; // open failed
+    }
+
+    // Fallback if empty string
+    if (fw_path_result[0] == '\0') {
+        strncpy(fw_path_result, DEFAULT_FIRMWARE_PATH, 1024);
+        fw_path_result[1023] = '\0'; // safety null-termination
+    }
+}
+
+// also never called
 char *get_accel_path(const char *name, int slot)
 {
     char *base_path = malloc(sizeof(char)*1024);
     char *slot_path = malloc(sizeof(char)*1024);
     char *accel_path = malloc(sizeof(char)*1024);
+    char fw_base_dir[1024];
     DIR *d, *base_d;
     struct dirent *dir, *base_dir;
     struct stat info;
 
-    d = opendir(FIRMWARE_PATH);
+    get_firmware_path(fw_base_dir);
+
+    d = opendir(fw_base_dir);
     if (d == NULL) {
-        acapd_perror("Directory %s not found\n",FIRMWARE_PATH);
+        acapd_perror("Directory %s not found\n", fw_base_dir);
     }
     while((dir = readdir(d)) != NULL) {
         if (dir->d_type == DT_DIR) {
-            sprintf(base_path,"%s/%s", FIRMWARE_PATH, dir->d_name);
+            sprintf(base_path,"%s/%s", fw_base_dir, dir->d_name);
 			base_d = opendir(base_path);
 			while((base_dir = readdir(base_d)) != NULL) {
 				if (base_dir->d_type == DT_DIR && !strcmp(base_dir->d_name, name)) {
@@ -323,6 +357,7 @@ out:
 	return slot_path;
 }
 
+// TODO: this function is never called?
 char * getAccelMetadata(char *package_name, int slot)
 {
 	char filename[1024];
