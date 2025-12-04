@@ -29,6 +29,10 @@
 #include <semaphore.h>
 #include <libdfx.h>
 
+#ifndef DTBO_ROOT_DIR
+#define DTBO_ROOT_DIR "/sys/kernel/config/device-tree/overlays"
+#endif
+
 struct daemon_config config;
 struct watch *active_watch = NULL;
 struct basePLDesign *base_designs = NULL;
@@ -61,6 +65,97 @@ not_dir(char *path)
 	struct stat sb;
 	return stat(path, &sb) || !S_ISDIR(sb.st_mode);
 }
+
+/**
+ * strip_trailing() - Remove one trailing character from a string
+ * @haystack:     The null-terminated string to modify (in-place).
+ * @needle:  The character to remove from the end of the string.
+ *
+ * Strips trailing needle from haystack - e.g. `\n` from file read
+ * results or `/` from paths before concatenating.
+ */
+void strip_trailing(char *haystack, const char needle)
+{
+    if (!haystack) return;  // safety
+
+    size_t len = strlen(haystack);
+    if (len == 0) return;
+
+    if (haystack[len - 1] == needle) {
+        haystack[len - 1] = '\0';
+    }
+}
+
+/**
+ * read_single_line() - Read a single line from a file into a buffer.
+ * @path:  Path to the file to read.
+ * @buf:   Destination buffer.
+ * @size:  Size of @buf.
+ *
+ * Reads exactly one line (up to newline or EOF) from @path.
+ * Trailing newline is removed if present.
+ *
+ * Return: 0 on success, -1 on failure.
+ */
+static int read_single_line(const char *path, char *buf, const size_t size)
+{
+    FILE *f = fopen(path, "r");
+    if (!f) {
+        DFX_ERR("Failed to open `%s` for reading", path);
+        return -1;
+    }
+
+    if (!fgets(buf, (int)size, f)) {
+        DFX_ERR("Failed to read from `%s`", path);
+        fclose(f);
+        return -1;
+    }
+
+    if (fclose(f) != 0) {
+        DFX_ERR("Failed to close `%s`", path);
+        return -1;
+    }
+
+    strip_trailing(buf, '\n');
+    return 0;
+}
+
+/**
+ * write_string_to_file() - Write a string to a file safely
+ * @path:  Path to the file to write
+ * @data:  Null-terminated string to write
+ *
+ * This function opens @path for writing, writes the contents of @data,
+ * and closes the file. All steps are checked for errors. On failure,
+ * a detailed error message including errno is logged.
+ *
+ * Return:
+ * * 0 on success,
+ * * -1 on failure (open, write, or close)
+ */
+static int write_string_to_file(const char *path, const char *data)
+{
+    FILE *f = fopen(path, "w");
+    if (!f) {
+        DFX_ERR("Failed to open `%s` for writing", path);
+        return -1;
+    }
+
+    if (fputs(data, f) == EOF) {
+        DFX_ERR("Failed to write to `%s`", path);
+        fclose(f); // attempt to close anyway
+        return -1;
+    }
+
+    if (fclose(f) != 0) {
+        DFX_ERR("Failed to close `%s` after writing", path);
+        return -1;
+    }
+
+    DFX_DBG("`%s` written to `%s`", data, path);
+    return 0;
+}
+
 
 struct basePLDesign *findBaseDesign(const char *name)
 {
@@ -1654,36 +1749,166 @@ firmware_dir_walk(void)
  */
 static int fpga_state(void)
 {
-	FILE *fptr;
-	char buf[10];
-	char *state_operating = "operating";
-	char *state_unknown = "unknown";
+    const char *state_file_path = "/sys/class/fpga_manager/fpga0/state";
+    const char *state_operating = "operating";
+    const char *state_unknown = "unknown";
+    char read_buf[128];
 
-	if (system("cat /sys/class/fpga_manager/fpga0/state >> /run/dfx-mgrd/state.txt")) {
-		DFX_ERR("Failed system() API");
-		return -1;
-	}
-	fptr = fopen("/run/dfx-mgrd/state.txt", "r");
-	if (fptr) {
-		if (fgets(buf, 10, fptr) == NULL) {
-			DFX_ERR("Failed to read fpga state");
-			buf[0] = 0;
-		}
-		fclose(fptr);
-		if (system("rm /run/dfx-mgrd/state.txt")) {
-			DFX_ERR("Failed system() API");
-		}
-		if ((strncmp(buf, state_operating, 9) == 0) || (strncmp(buf, state_unknown, 7) == 0))
-			return 0;
-		else
-			return -1;
-	}
+    if (read_single_line(state_file_path, read_buf, sizeof(read_buf)) < 0) {
+        DFX_ERR("Failed to determine the fpga state -"
+                " could not read state file");
+        return -1;
+    }
 
-	return -1;
+    DFX_DBG("FPGA state read as: `%s`", read_buf);
+
+    if (strcmp(read_buf, state_operating) == 0 ||
+        strcmp(read_buf, state_unknown) == 0) {
+        return 0;
+        }
+
+    DFX_ERR("FPGA is in a bad state. State: `%s`", read_buf);
+    return -1;
+}
+
+/**
+ * check_overlay_was_applied(...) - check that an overlay was applied
+ *
+ *
+ * @overlay_dir:      Path to the overlay directory in configfs.
+ * @requested_path:   The overlay path to write to the `path` attribute.
+ *
+ * This function checks that an overlay was properly applied by reading
+ * the overlay status and the overlay path by checking files in the configfs.
+ * It checks that "applied" is in the overlay's `status` attribute
+ * and that the `path` attribute contains the requested_path, i.e. the overlay
+ * file which was requested
+ *
+ * Return: 0 if the overlay status "applied" and path matches requested_path,
+ *        -1 on error or if either assertion is false
+ */
+static int check_overlay_was_applied(char *overlay_dir, char *requested_path)
+{
+    char full_path[256];
+    char read_buf[128];
+    const char *state_applied = "applied";
+
+    strip_trailing(overlay_dir, '/');
+
+    /* Check overlay path */
+    snprintf(full_path, sizeof(full_path), "%s/path", overlay_dir);
+    if (read_single_line(full_path, read_buf, sizeof(read_buf)) < 0) {
+        DFX_ERR("Failed to check the overlay was applied -"
+                " could not read path file");
+        return -1;
+    }
+
+    DFX_DBG("Overlay path read as: `%s`", read_buf);
+
+    if (strcmp(read_buf, requested_path) != 0) {
+        DFX_ERR("Overlay path does not match written path:\n"
+                "\tRequested: `%s`\n"
+                "\tCurrent:   `%s`",
+                requested_path, read_buf);
+        return -1;
+    }
+
+    /* Check overlay status */
+    snprintf(full_path, sizeof(full_path), "%s/status", overlay_dir);
+    if (read_single_line(full_path, read_buf, sizeof(read_buf)) < 0) {
+        DFX_ERR("Failed to check the overlay was applied -"
+                " could not read status file");
+        return -1;
+    }
+
+    DFX_DBG("Overlay status read as: `%s`", read_buf);
+
+    if (strcmp(read_buf, state_applied) != 0) {
+        DFX_ERR("Overlay status is `%s`, expected `%s`",
+                read_buf, state_applied);
+        return -1;
+    }
+
+    return 0;
+}
+
+/**
+ * write_path_to_overlay(...) - write a requested overlay path to configfs
+ *
+ * @overlay_dir:      Path to the overlay directory in configfs.
+ * @requested_path:   The overlay path to write to the `path` attribute.
+ *
+ * This function writes the specified overlay path to the overlay's `path`
+ * attribute in configfs. It attempts to write `requested_path` into the
+ * `<overlay_dir>/path` file.
+ *
+ * Return: 0 on success,
+ *        -1 on error (e.g., failed to open, write, or close the file)
+ */
+static int write_path_to_overlay(char *overlay_dir, const char *requested_path)
+{
+    char full_path[256];
+    snprintf(full_path, sizeof(full_path), "%s/path", overlay_dir);
+    if (write_string_to_file(full_path, requested_path)) {
+        DFX_ERR("Failed to apply the overlay - could not write to path file");
+        return -1;
+    }
+    return 0;
+}
+
+/**
+ * write_to_fpga_firmware(...) - write a firmware binary name to the FPGA manager
+ *
+ * @requested_binary_name: name of the firmware binary to load
+ *
+ * This function writes the specified firmware binary name to the FPGA manager's
+ * firmware attribute in sysfs (`/sys/class/fpga_manager/fpga0/firmware`). This
+ * triggers the FPGA manager to load the specified firmware onto the FPGA. All
+ * file operations (open, write, close) are checked, and detailed error messages
+ * including errno are reported if any operation fails.
+ *
+ * Return: 0 on success (firmware name successfully written),
+ *        -1 on error (e.g., failed to open, write, or close the sysfs file)
+ */
+static int write_to_fpga_firmware(const char *requested_binary_name)
+{
+    if (write_string_to_file("/sys/class/fpga_manager/fpga0/firmware",
+                             requested_binary_name)) {
+        DFX_ERR("Failed to write the bitstream -"
+                " could not write to firmware file");
+        return -1;
+    }
+
+    return 0;
+}
+
+/**
+ * write_to_fpga_flags(...) - write a firmware binary name to the FPGA manager
+ *
+ * @flags: flag value to write - see user_load for more information.
+ *
+ * This function converts `flags` to a hex formatted string before writing
+ * that string to the fpga flags attribute
+ * (`/sys/class/fpga_manager/fpga0/flags`)
+ *
+ * Return: 0 on success (firmware name successfully written),
+ *        -1 on error (e.g., failed to open, write, or close the sysfs file)
+ */
+static int write_to_fpga_flags(const int flags)
+{
+    char buf[32];
+    snprintf(buf, sizeof(buf), "%x", flags); // convert to hex
+    if (write_string_to_file("/sys/class/fpga_manager/fpga0/flags", buf)) {
+        DFX_ERR("Failed to set fpga flags - could not write to flags file");
+        return -1;
+    }
+
+    return 0;
 }
 
 /**
  * user_load_sysfs() - load FPGA firmware via sysfs.
+ *
  * @bin: name of the bitstream file to load.
  *
  * This static function loads the FPGA by writing the provided bitstream
@@ -1695,15 +1920,27 @@ static int fpga_state(void)
  */
 static int user_load_sysfs(char *bin)
 {
-	char command[2048];
-	snprintf(command, sizeof(command), "echo %s > /sys/class/fpga_manager/fpga0/firmware", bin);
-	if (system(command)) {
-		DFX_ERR("Failed system() API");
-		return -1;
-	}
-
-	return (fpga_state() == 0) ? 0 : -1;
+    if (write_to_fpga_firmware(bin)) {
+        DFX_ERR("Failed to load firmware - failed to request bitstream load");
+        return -1;
+    }
+    if (fpga_state()) {
+        DFX_ERR("Failed to load firmware -"" write succeeded, but fpga reports"
+                " bad state (or state could not be determined)");
+        return -1;
+    }
+	return 0;
 }
+
+static void remove_overlay_dir(const char *dir)
+{
+    if (rmdir(dir) != 0) {
+        DFX_ERR("Failed to remove directory `%s`", dir);
+    } else {
+        DFX_DBG("Directory `%s` removed", dir);
+    }
+}
+
 
 /**
  * user_load_overlay() - Load device tree overlay using configfs interface.
@@ -1717,67 +1954,42 @@ static int user_load_sysfs(char *bin)
  * Return: 0 on success,
  *        -1 on failure.
  */
-static int user_load_overlay(char *ov, char *region)
-{
-	char command[2048], ov_dir[512], buf[512];
-	struct stat sb;
-	FILE *fptr;
+static int user_load_overlay(char *ov, char *region) {
+    char ov_dir[512];
+    char* overlays_root_path = DTBO_ROOT_DIR;
+    struct stat sb;
 
-	snprintf(ov_dir, sizeof(ov_dir), "/sys/kernel/config/device-tree/overlays/%s", region);
-	if (((stat(ov_dir, &sb) == 0) && S_ISDIR(sb.st_mode))) {
-		DFX_ERR("Overlay already exists in the live tree");
-		return -1;
-	}
+    snprintf(ov_dir, sizeof(ov_dir), "%s/%s", overlays_root_path, region);
+    if (((stat(ov_dir, &sb) == 0) && S_ISDIR(sb.st_mode))) {
+        DFX_ERR("Overlay already exists in the live tree");
+        return -1;
+    }
 
-	snprintf(command, sizeof(command), "mkdir %s", ov_dir);
-	if (system(command)) {
-		DFX_ERR("Failed system() API");
-		return -1;
-	}
+    // here, mode (0755) is ignored by the kernel so can be anything.
+    if (mkdir(ov_dir, 0755)) {
+        DFX_ERR("Failed to create overlay dir");
+        return -1;
+    }
 
-	snprintf(command, sizeof(command), "echo -n %s > %s/path", ov, ov_dir);
-	if (system(command)) {
-		DFX_ERR("Failed system() API");
-	}
+    if (write_path_to_overlay(ov_dir, ov)) {
+        DFX_ERR("Failed to set overlay's source path");
+        remove_overlay_dir(ov_dir);
+        return -1;
+    }
 
-	snprintf(command, sizeof(command), "cat %s/path >> /run/dfx-mgrd/state.txt", ov_dir);
-	if (system(command)) {
-		DFX_ERR("Failed system() API");
-	}
+    if (check_overlay_was_applied(ov_dir, ov)) {
+        DFX_ERR("Overlay failed to apply - state or path was wrong");
+        remove_overlay_dir(ov_dir);
+        return -1;
+    }
 
-	fptr = fopen("/run/dfx-mgrd/state.txt", "r");
-	if (fptr) {
-		if (fgets(buf, strlen(ov) + 1, fptr) == NULL) {
-			DFX_ERR("Failed to read overlay path");
-			buf[0] = 0;
-		}
-		fclose(fptr);
-		if (system("rm /run/dfx-mgrd/state.txt")) {
-			DFX_ERR("Failed system() API");
-		}
+    if (fpga_state()) {
+        DFX_ERR("Bitstream loading failed during overlay application");
+        remove_overlay_dir(ov_dir);
+        return -1;
+    }
 
-		if (!strcmp(buf, ov)) {
-			DFX_PR("Applied overlay");
-		} else {
-			DFX_ERR("Failed to apply Overlay");
-			return -1;
-		}
-	} else {
-		DFX_ERR("Failed to check overlay state");
-		return -1;
-	}
-
-	if (fpga_state()) {
-		DFX_ERR("Failed to load bitstream. Removing overlay applied");
-		snprintf(command, sizeof(command), "rmdir %s", ov_dir);
-		if (system(command)) {
-			DFX_ERR("Failed system() API");
-		}
-
-		return -1;
-	}
-
-	return 0;
+    return 0;
 }
 
 /**
@@ -1803,9 +2015,8 @@ static int user_load_overlay(char *ov, char *region)
  * Return: An integer unique handle id on success,
  *        -1 on failure or if constraints are violated.
  */
-int user_load(int flag, char *binfile, char *overlay, char *region)
+int user_load(const int flag, char *binfile, char *overlay, char *region)
 {
-	char command[2048];
 	char *bin = NULL, *ov = NULL, *tmp, *token;
 	int rv = -1;
 
@@ -1854,11 +2065,13 @@ int user_load(int flag, char *binfile, char *overlay, char *region)
 		bin = token;
 	}
 
-	snprintf(command, sizeof(command), "echo %x > /sys/class/fpga_manager/fpga0/flags", flag & 1);
-	if (system(command)) {
-		DFX_ERR("Failed system() API");
-	}
+    // ignore bits >= 1, only care about partial or full.
+    if (write_to_fpga_flags(flag & 1)) {
+        DFX_ERR("Failed to set flags");
+        goto ret;
+    }
 
+    // Check between bitstream load via overlay, or direct.
 	if ((flag >> 1) & 1) {
 		if (region == NULL) {
 			DFX_ERR("Provide overlay region name");
@@ -1932,7 +2145,7 @@ ret:
  */
 int user_unload_overlay(char *region)
 {
-	char command[2048], ov_dir[512];
+	char ov_dir[512];
 	struct stat sb;
 	int i;
 
@@ -1941,12 +2154,9 @@ int user_unload_overlay(char *region)
 		return -1;
 	}
 
-	snprintf(ov_dir, sizeof(ov_dir), "/sys/kernel/config/device-tree/overlays/%s", region);
+	snprintf(ov_dir, sizeof(ov_dir), "%s/%s", DTBO_ROOT_DIR, region);
 	if (((stat(ov_dir, &sb) == 0) && S_ISDIR(sb.st_mode))) {
-		snprintf(command, sizeof(command), "rmdir %s", ov_dir);
-		if (system(command)) {
-			DFX_ERR("Failed system() API");
-		}
+	    remove_overlay_dir(ov_dir);
 
 		for (i = 0; (i < MAX_WATCH) && strncmp(base_designs[i].user_load_region, region, strlen(region) + 1); i++);
 		if (i == MAX_WATCH) {
@@ -2022,12 +2232,12 @@ static void init_user_load(void)
 {
     DIR *FD;
 
-    FD = opendir("/sys/kernel/config/device-tree/overlays/");
+    FD = opendir(DTBO_ROOT_DIR);
     if (FD)
 	    closedir(FD);
     else {
-    	DFX_ERR("/sys/kernel/config/device-tree-overlays/ not present on the system. "
-	     "Is configfs enabled in kernel config?");
+    	DFX_ERR("/sys/kernel/config/device-tree-overlays/ not present on the"
+    	        " system. Is configfs enabled in kernel config?");
 
     }
 }
