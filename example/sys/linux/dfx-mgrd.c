@@ -188,19 +188,7 @@ int main(int argc, char **argv)
 	_unused(argc);
 	_unused(argv);
 
-    // create runtime directory to store state.txt in
-    DIR * state_dir = opendir("/run/dfx-mgrd");
-    if (!state_dir) {
-        DFX_DBG("making /run/dfx-mgrd directory");
-        if (system("mkdir -p /run/dfx-mgrd")) {
-            DFX_ERR("Failed system() API");
-            return -1;
-        }
-    } else {
-        closedir(state_dir);
-    }
-
-	// initialize the complaint queue
+    // initialize the complaint queue
 	dfx_init();
 
 	if (stat(SERVER_SOCKET, &statbuf) == 0) {
