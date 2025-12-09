@@ -1671,9 +1671,10 @@ static int fpga_state(void)
     DFX_DBG("FPGA state read as: `%s`", read_buf);
 
     if (strcmp(read_buf, state_operating) == 0 ||
-        strcmp(read_buf, state_unknown) == 0) {
+        strcmp(read_buf, state_unknown) == 0)
+    {
         return 0;
-        }
+    }
 
     DFX_ERR("FPGA is in a bad state. State: `%s`", read_buf);
     return -1;
@@ -1760,7 +1761,7 @@ static int user_load_sysfs(const char *bin)
                 " bad state (or state could not be determined)");
         return -1;
     }
-	return 0;
+    return 0;
 }
 
 /**
@@ -1857,10 +1858,10 @@ static int user_load_overlay(const char *ov, const char *region) {
 int user_load(const int flag, const char *binfile, const char *overlay, const char *region)
 {
 	char *bin = NULL;
-    char *tmp;
-    char *token;
-    const char *ov = NULL;
-    int rv = -1;
+	char *tmp;
+	char *token;
+	const char *ov = NULL;
+	int rv = -1;
 
 	if (platform.active_base != NULL) {
 		if (platform.active_base->is_user_load) {
@@ -1882,13 +1883,13 @@ int user_load(const int flag, const char *binfile, const char *overlay, const ch
 			if (platform.active_base->active > 0) {
 				DFX_ERR("Remove previously loaded DFX designs, no empty slot.");
 				goto ret;
-			} else {
-				/* Remove existing DFX base design before loading new user managed design */
-				remove_base(platform.active_base->fpga_cfg_id);
-				free(platform.active_base->slots);
-				platform.active_base->slots = NULL;
-				platform.active_base = NULL;
 			}
+			/* Remove existing DFX base design before loading new user managed design */
+			remove_base(platform.active_base->fpga_cfg_id);
+			free(platform.active_base->slots);
+			platform.active_base->slots = NULL;
+			platform.active_base = NULL;
+
 		}
 	}
 
@@ -1912,7 +1913,7 @@ int user_load(const int flag, const char *binfile, const char *overlay, const ch
 		DFX_ERR("Failed to set flags");
 	}
 
-    // Check between bitstream load via overlay, or direct.
+	// Check between bitstream load via overlay, or direct.
 	if ((flag >> 1) & 1) {
 		if (region == NULL) {
 			DFX_ERR("Provide overlay region name");
@@ -1928,41 +1929,41 @@ int user_load(const int flag, const char *binfile, const char *overlay, const ch
 		while((token = strsep(&tmp, "/"))) {
 			ov = token;
 		}
-	    dfx_set_firmware_lookup_path(overlay);
+		dfx_set_firmware_lookup_path(overlay);
 		rv = user_load_overlay(ov, region);
 	} else {
-	    dfx_set_firmware_lookup_path(binfile);
+		dfx_set_firmware_lookup_path(binfile);
 		rv = user_load_sysfs(bin);
 	}
 
 	if (!rv) {
-	    int i;
+		int i;
 
-	    /* get the free space in array to add new entry */
-	    for (i = 0; (i < MAX_WATCH) && (base_designs[i].base_path[0] != '\0'); i++);
+		/* get the free space in array to add new entry */
+		for (i = 0; (i < MAX_WATCH) && (base_designs[i].base_path[0] != '\0'); i++);
 
-	    if (i == MAX_WATCH) {
-	        DFX_ERR("Unable to add new design, MAX limit (%d) reached.", MAX_WATCH);
-	        user_unload_overlay(region);
-	        rv = -1;
-	    } else {
-	        DFX_DBG("Adding user managed design %s", bin);
-	        strncpy(base_designs[i].name, bin, sizeof(base_designs[i].name) - 1);
-	        base_designs[i].name[sizeof(base_designs[i].name) - 1] = '\0';
-	        strncpy(base_designs[i].base_path, "User", sizeof(base_designs[i].base_path) - 1);
-	        base_designs[i].base_path[sizeof(base_designs[i].base_path) - 1] = '\0';
-	        base_designs[i].active = 0;
-	        base_designs[i].is_user_load = 1;
-	        base_designs[i].user_load_type = flag & 1;
-	        rv = base_designs[i].user_load_handle = get_free_slot_handle();
-	        strncpy(base_designs[i].user_load_region, region ? region : "", sizeof(base_designs[i].user_load_region) - 1);
-	        base_designs[i].user_load_region[sizeof(base_designs[i].user_load_region) - 1] = '\0';
+		if (i == MAX_WATCH) {
+			DFX_ERR("Unable to add new design, MAX limit (%d) reached.", MAX_WATCH);
+			user_unload_overlay(region);
+			rv = -1;
+		} else {
+			DFX_DBG("Adding user managed design %s", bin);
+			strncpy(base_designs[i].name, bin, sizeof(base_designs[i].name) - 1);
+			base_designs[i].name[sizeof(base_designs[i].name) - 1] = '\0';
+			strncpy(base_designs[i].base_path, "User", sizeof(base_designs[i].base_path) - 1);
+			base_designs[i].base_path[sizeof(base_designs[i].base_path) - 1] = '\0';
+			base_designs[i].active = 0;
+			base_designs[i].is_user_load = 1;
+			base_designs[i].user_load_type = flag & 1;
+			rv = base_designs[i].user_load_handle = get_free_slot_handle();
+			strncpy(base_designs[i].user_load_region, region ? region : "", sizeof(base_designs[i].user_load_region) - 1);
+			base_designs[i].user_load_region[sizeof(base_designs[i].user_load_region) - 1] = '\0';
 
-	        if (base_designs[i].user_load_type && platform.active_base)
-	            platform.active_base->active += 1;
-	        else
-	            platform.active_base = &base_designs[i];
-	    }
+			if (base_designs[i].user_load_type && platform.active_base)
+				platform.active_base->active += 1;
+			else
+				platform.active_base = &base_designs[i];
+		}
 	}
 
 
@@ -1996,10 +1997,10 @@ int user_unload_overlay(const char *region)
 	}
 
 	snprintf(ov_dir, sizeof(ov_dir), "%s/%s", DTBO_ROOT_DIR, region);
-	if (((stat(ov_dir, &sb) == 0) && S_ISDIR(sb.st_mode))) {
+	if ( stat(ov_dir, &sb) == 0 && S_ISDIR(sb.st_mode) ) {
 	    remove_overlay_dir(ov_dir);
 
-		for (i = 0; (i < MAX_WATCH) && strncmp(base_designs[i].user_load_region, region, strlen(region) + 1); i++);
+		for (i = 0; (i < MAX_WATCH) && strncmp(base_designs[i].user_load_region, region, strlen(region) + 1) != 0 ; i++);
 		if (i == MAX_WATCH) {
 			DFX_ERR("No entry found for user_load_region: %s.", region);
 		} else {
@@ -2007,10 +2008,11 @@ int user_unload_overlay(const char *region)
 		}
 
 		return 0;
-	} else {
-		DFX_ERR("Overlay doesn't exist.");
-		return -1;
 	}
+
+	DFX_ERR("Overlay doesn't exist.");
+	return -1;
+
 }
 
 /**
@@ -2084,7 +2086,7 @@ static void init_user_load(void)
 }
 
 #define BUF_LEN (10 * (sizeof(struct inotify_event) + NAME_MAX + 1))
-void *threadFunc(void *)
+void *threadFunc(void * _)
 {
     int wd, j, ret;
     char buf[BUF_LEN] __attribute__ ((aligned(8)));
