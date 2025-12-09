@@ -66,97 +66,6 @@ not_dir(char *path)
 	return stat(path, &sb) || !S_ISDIR(sb.st_mode);
 }
 
-/**
- * strip_trailing() - Remove one trailing character from a string
- * @haystack:     The null-terminated string to modify (in-place).
- * @needle:  The character to remove from the end of the string.
- *
- * Strips trailing needle from haystack - e.g. `\n` from file read
- * results or `/` from paths before concatenating.
- */
-void strip_trailing(char *haystack, const char needle)
-{
-    if (!haystack) return;  // safety
-
-    size_t len = strlen(haystack);
-    if (len == 0) return;
-
-    if (haystack[len - 1] == needle) {
-        haystack[len - 1] = '\0';
-    }
-}
-
-/**
- * read_single_line() - Read a single line from a file into a buffer.
- * @path:  Path to the file to read.
- * @buf:   Destination buffer.
- * @size:  Size of @buf.
- *
- * Reads exactly one line (up to newline or EOF) from @path.
- * Trailing newline is removed if present.
- *
- * Return: 0 on success, -1 on failure.
- */
-static int read_single_line(const char *path, char *buf, const size_t size)
-{
-    FILE *f = fopen(path, "r");
-    if (!f) {
-        DFX_ERR("Failed to open `%s` for reading", path);
-        return -1;
-    }
-
-    if (!fgets(buf, (int)size, f)) {
-        DFX_ERR("Failed to read from `%s`", path);
-        fclose(f);
-        return -1;
-    }
-
-    if (fclose(f) != 0) {
-        DFX_ERR("Failed to close `%s`", path);
-        return -1;
-    }
-
-    strip_trailing(buf, '\n');
-    return 0;
-}
-
-/**
- * write_string_to_file() - Write a string to a file safely
- * @path:  Path to the file to write
- * @data:  Null-terminated string to write
- *
- * This function opens @path for writing, writes the contents of @data,
- * and closes the file. All steps are checked for errors. On failure,
- * a detailed error message including errno is logged.
- *
- * Return:
- * * 0 on success,
- * * -1 on failure (open, write, or close)
- */
-static int write_string_to_file(const char *path, const char *data)
-{
-    FILE *f = fopen(path, "w");
-    if (!f) {
-        DFX_ERR("Failed to open `%s` for writing", path);
-        return -1;
-    }
-
-    if (fputs(data, f) == EOF) {
-        DFX_ERR("Failed to write to `%s`", path);
-        fclose(f); // attempt to close anyway
-        return -1;
-    }
-
-    if (fclose(f) != 0) {
-        DFX_ERR("Failed to close `%s` after writing", path);
-        return -1;
-    }
-
-    DFX_DBG("`%s` written to `%s`", data, path);
-    return 0;
-}
-
-
 struct basePLDesign *findBaseDesign(const char *name)
 {
     int i,j;
@@ -1749,12 +1658,11 @@ firmware_dir_walk(void)
  */
 static int fpga_state(void)
 {
-    const char *state_file_path = "/sys/class/fpga_manager/fpga0/state";
     const char *state_operating = "operating";
     const char *state_unknown = "unknown";
     char read_buf[128];
 
-    if (read_single_line(state_file_path, read_buf, sizeof(read_buf)) < 0) {
+    if (dfx_get_fpga_state(read_buf, sizeof(read_buf)) < 0) {
         DFX_ERR("Failed to determine the fpga state -"
                 " could not read state file");
         return -1;
@@ -1787,17 +1695,14 @@ static int fpga_state(void)
  * Return: 0 if the overlay status "applied" and path matches requested_path,
  *        -1 on error or if either assertion is false
  */
-static int check_overlay_was_applied(char *overlay_dir, char *requested_path)
+static int check_overlay_was_applied(const char *overlay_dir, const char *requested_path)
 {
-    char full_path[256];
     char read_buf[128];
     const char *state_applied = "applied";
 
-    strip_trailing(overlay_dir, '/');
 
     /* Check overlay path */
-    snprintf(full_path, sizeof(full_path), "%s/path", overlay_dir);
-    if (read_single_line(full_path, read_buf, sizeof(read_buf)) < 0) {
+    if (dfx_get_overlay_path(overlay_dir, read_buf, sizeof(read_buf)) < 0) {
         DFX_ERR("Failed to check the overlay was applied -"
                 " could not read path file");
         return -1;
@@ -1814,8 +1719,7 @@ static int check_overlay_was_applied(char *overlay_dir, char *requested_path)
     }
 
     /* Check overlay status */
-    snprintf(full_path, sizeof(full_path), "%s/status", overlay_dir);
-    if (read_single_line(full_path, read_buf, sizeof(read_buf)) < 0) {
+    if (dfx_get_overlay_status(overlay_dir, read_buf, sizeof(read_buf)) < 0) {
         DFX_ERR("Failed to check the overlay was applied -"
                 " could not read status file");
         return -1;
@@ -1832,79 +1736,6 @@ static int check_overlay_was_applied(char *overlay_dir, char *requested_path)
     return 0;
 }
 
-/**
- * write_path_to_overlay(...) - write a requested overlay path to configfs
- *
- * @overlay_dir:      Path to the overlay directory in configfs.
- * @requested_path:   The overlay path to write to the `path` attribute.
- *
- * This function writes the specified overlay path to the overlay's `path`
- * attribute in configfs. It attempts to write `requested_path` into the
- * `<overlay_dir>/path` file.
- *
- * Return: 0 on success,
- *        -1 on error (e.g., failed to open, write, or close the file)
- */
-static int write_path_to_overlay(char *overlay_dir, const char *requested_path)
-{
-    char full_path[256];
-    snprintf(full_path, sizeof(full_path), "%s/path", overlay_dir);
-    if (write_string_to_file(full_path, requested_path)) {
-        DFX_ERR("Failed to apply the overlay - could not write to path file");
-        return -1;
-    }
-    return 0;
-}
-
-/**
- * write_to_fpga_firmware(...) - write a firmware binary name to the FPGA manager
- *
- * @requested_binary_name: name of the firmware binary to load
- *
- * This function writes the specified firmware binary name to the FPGA manager's
- * firmware attribute in sysfs (`/sys/class/fpga_manager/fpga0/firmware`). This
- * triggers the FPGA manager to load the specified firmware onto the FPGA. All
- * file operations (open, write, close) are checked, and detailed error messages
- * including errno are reported if any operation fails.
- *
- * Return: 0 on success (firmware name successfully written),
- *        -1 on error (e.g., failed to open, write, or close the sysfs file)
- */
-static int write_to_fpga_firmware(const char *requested_binary_name)
-{
-    if (write_string_to_file("/sys/class/fpga_manager/fpga0/firmware",
-                             requested_binary_name)) {
-        DFX_ERR("Failed to write the bitstream -"
-                " could not write to firmware file");
-        return -1;
-    }
-
-    return 0;
-}
-
-/**
- * write_to_fpga_flags(...) - write a firmware binary name to the FPGA manager
- *
- * @flags: flag value to write - see user_load for more information.
- *
- * This function converts `flags` to a hex formatted string before writing
- * that string to the fpga flags attribute
- * (`/sys/class/fpga_manager/fpga0/flags`)
- *
- * Return: 0 on success (firmware name successfully written),
- *        -1 on error (e.g., failed to open, write, or close the sysfs file)
- */
-static int write_to_fpga_flags(const int flags)
-{
-    char buf[32];
-    snprintf(buf, sizeof(buf), "%x", flags); // convert to hex
-    if (write_string_to_file("/sys/class/fpga_manager/fpga0/flags", buf)) {
-        DFX_ERR("Failed to set fpga flags - could not write to flags file");
-        return -1;
-    }
-
-    return 0;
-}
 
 /**
  * user_load_sysfs() - load FPGA firmware via sysfs.
@@ -1920,7 +1751,7 @@ static int write_to_fpga_flags(const int flags)
  */
 static int user_load_sysfs(char *bin)
 {
-    if (write_to_fpga_firmware(bin)) {
+    if (dfx_set_fpga_firmware(bin)) {
         DFX_ERR("Failed to load firmware - failed to request bitstream load");
         return -1;
     }
@@ -1971,7 +1802,7 @@ static int user_load_overlay(char *ov, char *region) {
         return -1;
     }
 
-    if (write_path_to_overlay(ov_dir, ov)) {
+    if (dfx_set_overlay_path(ov_dir, ov)) {
         DFX_ERR("Failed to set overlay's source path");
         remove_overlay_dir(ov_dir);
         return -1;
@@ -2065,11 +1896,10 @@ int user_load(const int flag, char *binfile, char *overlay, char *region)
 		bin = token;
 	}
 
-    // ignore bits >= 1, only care about partial or full.
-    if (write_to_fpga_flags(flag & 1)) {
-        DFX_ERR("Failed to set flags");
-        goto ret;
-    }
+	// ignore bits >= 1, only care about partial or full.
+	if (dfx_set_fpga_flags(flag & 1)) {
+		DFX_ERR("Failed to set flags");
+	}
 
     // Check between bitstream load via overlay, or direct.
 	if ((flag >> 1) & 1) {
