@@ -1749,7 +1749,7 @@ static int check_overlay_was_applied(const char *overlay_dir, const char *reques
  * Return: 0 on success,
  *        -1 on failure.
  */
-static int user_load_sysfs(char *bin)
+static int user_load_sysfs(const char *bin)
 {
     if (dfx_set_fpga_firmware(bin)) {
         DFX_ERR("Failed to load firmware - failed to request bitstream load");
@@ -1763,6 +1763,14 @@ static int user_load_sysfs(char *bin)
 	return 0;
 }
 
+/**
+ * remove_overlay_dir() - remove device tree overlay from configfs interface.
+ *
+ * @dir: the overlay directory to be removed
+ *
+ * This function attempts to remove the directory provided, with additional logging.
+ *
+ */
 static void remove_overlay_dir(const char *dir)
 {
     if (rmdir(dir) != 0) {
@@ -1785,7 +1793,7 @@ static void remove_overlay_dir(const char *dir)
  * Return: 0 on success,
  *        -1 on failure.
  */
-static int user_load_overlay(char *ov, char *region) {
+static int user_load_overlay(const char *ov, const char *region) {
     char ov_dir[512];
     char* overlays_root_path = DTBO_ROOT_DIR;
     struct stat sb;
@@ -1846,10 +1854,13 @@ static int user_load_overlay(char *ov, char *region) {
  * Return: An integer unique handle id on success,
  *        -1 on failure or if constraints are violated.
  */
-int user_load(const int flag, char *binfile, char *overlay, char *region)
+int user_load(const int flag, const char *binfile, const char *overlay, const char *region)
 {
-	char *bin = NULL, *ov = NULL, *tmp, *token;
-	int rv = -1;
+	char *bin = NULL;
+    char *tmp;
+    char *token;
+    const char *ov = NULL;
+    int rv = -1;
 
 	if (platform.active_base != NULL) {
 		if (platform.active_base->is_user_load) {
@@ -1973,7 +1984,7 @@ ret:
  * Return: 0 on success,
  *        -1 on failure or if the overlay does not exist.
  */
-int user_unload_overlay(char *region)
+int user_unload_overlay(const char *region)
 {
 	char ov_dir[512];
 	struct stat sb;
@@ -2017,7 +2028,7 @@ int user_unload_overlay(char *region)
  * Return: 0 on success,
  *        -1 on failure or if the handle does not correspond to any loaded design.
  */
-int user_unload(int handle)
+int user_unload(const int handle)
 {
 	int i;
 
